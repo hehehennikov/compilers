@@ -1,0 +1,1 @@
+lexer_add_test(lexer/unit)
