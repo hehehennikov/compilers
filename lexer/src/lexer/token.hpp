@@ -13,6 +13,7 @@ enum class TokenType {
   Number,
   If,
   Else,
+  While,
   LParen,
   RParen,
   LBrace,

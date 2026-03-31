@@ -5,7 +5,8 @@
 enum class ErrorType {
   LexicalError,
   ParseError,
-  RuntimeError
+  RuntimeError,
+  SyntaxError
 };
 
 struct Error {

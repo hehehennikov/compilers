@@ -1,27 +1,29 @@
 #pragma once
 
-#include <iostream>
 #include <vector>
 #include <string>
 #include <memory>
-#include <map>
 
-struct Context {
-  std::map<std::string, int> variables;
-};
+#include "visitor.hpp"
+#include "scope.hpp"
 
 class Expression {
  public:
   virtual ~Expression() = default;
-  virtual int Evaluate(Context& ctx) = 0;
+
+  virtual void Accept(Visitor* v) = 0;
 };
 
 class LiteralExpression : public Expression {
  public:
   explicit LiteralExpression(int value)
-      : value_(value) {}
+    : value_(value) {}
 
-  int Evaluate(Context& /* unused */) override {
+  void Accept(Visitor* v) override {
+    v->Visit(this);
+  }
+
+  int GetValue() const {
     return value_;
   }
 
@@ -32,23 +34,45 @@ class LiteralExpression : public Expression {
 class VariableExpression : public Expression {
  public:
   explicit VariableExpression(std::string name)
-        : name_(std::move(name)) {}
+    : name_(std::move(name)) {}
 
-  int Evaluate(Context& ctx) override {
-    return ctx.variables[name_];
+  void Accept(Visitor* v) override {
+    v->Visit(this);
+  }
+
+  const std::string& GetName() const {
+    return name_;
+  }
+
+  void SetSymbol(Symbol* sym) {
+    symbol_ = sym;
+  }
+
+  Symbol* GetSymbol() const {
+    return symbol_;
   }
 
  private:
   std::string name_;
+  Symbol* symbol_ = nullptr;
 };
 
 class BinaryExpression : public Expression {
  public:
-  BinaryExpression(std::unique_ptr<Expression> left, std::unique_ptr<Expression> right)
+  BinaryExpression(std::unique_ptr<Expression> left,
+                   std::unique_ptr<Expression> right)
       : left_(std::move(left)), right_(std::move(right)) {}
 
-  int Evaluate(Context& ctx) override {
-    return left_->Evaluate(ctx) == right_->Evaluate(ctx);
+  void Accept(Visitor* v) override {
+    v->Visit(this);
+  }
+
+  Expression* GetLeft() const {
+    return left_.get();
+  }
+
+  Expression* GetRight() const {
+    return right_.get();
   }
 
  private:
@@ -59,16 +83,21 @@ class BinaryExpression : public Expression {
 class Statement {
  public:
   virtual ~Statement() = default;
-  virtual void Execute(Context& ctx) = 0;
+
+  virtual void Accept(Visitor* v) = 0;
 };
 
 class VarStatement : public Statement {
  public:
   explicit VarStatement(std::string name)
-      : name_(std::move(name)) {}
+    : name_(std::move(name)) {}
 
-  void Execute(Context& ctx) override {
-    ctx.variables[name_] = 0;
+  void Accept(Visitor* v) override {
+    v->Visit(this);
+  }
+
+  const std::string& GetName() const {
+    return name_;
   }
 
  private:
@@ -80,22 +109,43 @@ class AssignStatement : public Statement {
   AssignStatement(std::string name, std::unique_ptr<Expression> expr)
       : name_(std::move(name)), expr_(std::move(expr)) {}
 
-  void Execute(Context& ctx) override {
-    ctx.variables[name_] = expr_->Evaluate(ctx);
+  void Accept(Visitor* v) override {
+    v->Visit(this);
+  }
+
+  const std::string& GetName() const {
+    return name_;
+  }
+
+  Expression* GetExpression() const {
+    return expr_.get();
+  }
+
+  void SetSymbol(Symbol* sym) {
+    symbol_ = sym;
+  }
+
+  Symbol* GetSymbol() const {
+    return symbol_;
   }
 
  private:
   std::string name_;
   std::unique_ptr<Expression> expr_;
+  Symbol* symbol_ = nullptr;
 };
 
 class PrintStatement : public Statement {
  public:
   explicit PrintStatement(std::unique_ptr<Expression> expr)
-      : expr_(std::move(expr)) {}
+    : expr_(std::move(expr)) {}
 
-  void Execute(Context& ctx) override {
-    std::cout << expr_->Evaluate(ctx) << '\n';
+  void Accept(Visitor* v) override {
+    v->Visit(this);
+  }
+
+  Expression* GetExpression() const {
+    return expr_.get();
   }
 
  private:
@@ -104,23 +154,27 @@ class PrintStatement : public Statement {
 
 class IfStatement : public Statement {
  public:
-  IfStatement(std::unique_ptr<Expression> cond, 
+  IfStatement(std::unique_ptr<Expression> cond,
               std::vector<std::unique_ptr<Statement>> then_branch,
               std::vector<std::unique_ptr<Statement>> else_branch)
-      : cond_(std::move(cond)), 
-        then_branch_(std::move(then_branch)), 
+      : cond_(std::move(cond)),
+        then_branch_(std::move(then_branch)),
         else_branch_(std::move(else_branch)) {}
 
-  void Execute(Context& ctx) override {
-    if (cond_->Evaluate(ctx)) {
-      for (const auto& s : then_branch_) {
-        s->Execute(ctx);
-      }
-    } else {
-      for (const auto& s : else_branch_) {
-        s->Execute(ctx);
-      }
-    }
+  void Accept(Visitor* v) override {
+    v->Visit(this);
+  }
+
+  Expression* GetCondition() const {
+    return cond_.get();
+  }
+
+  const std::vector<std::unique_ptr<Statement>>& GetThenBranch() const {
+    return then_branch_;
+  }
+
+  const std::vector<std::unique_ptr<Statement>>& GetElseBranch() const {
+    return else_branch_;
   }
 
  private:
@@ -129,10 +183,34 @@ class IfStatement : public Statement {
   std::vector<std::unique_ptr<Statement>> else_branch_;
 };
 
+class WhileStatement : public Statement {
+ public:
+  WhileStatement(std::unique_ptr<Expression> cond,
+                 std::vector<std::unique_ptr<Statement>> body)
+      : cond_(std::move(cond)), body_(std::move(body)) {}
+
+  void Accept(Visitor* v) override {
+    v->Visit(this);
+  }
+
+  Expression* GetCondition() const {
+    return cond_.get();
+  }
+
+  const std::vector<std::unique_ptr<Statement>>& GetBody() const {
+    return body_;
+  }
+
+ private:
+  std::unique_ptr<Expression> cond_;
+  std::vector<std::unique_ptr<Statement>> body_;
+};
+
 class Program {
  public:
   virtual ~Program() = default;
-  virtual void Run() = 0;
+
+  virtual void Accept(Visitor* v) = 0;
 };
 
 class MainFunction : public Program {
@@ -140,11 +218,12 @@ class MainFunction : public Program {
   explicit MainFunction(std::vector<std::unique_ptr<Statement>> stmts)
       : statements_(std::move(stmts)) {}
 
-  void Run() override {
-    Context ctx;
-    for (const auto& s : statements_) {
-      s->Execute(ctx);
-    }
+  void Accept(Visitor* v) override {
+    v->Visit(this);
+  }
+
+  const std::vector<std::unique_ptr<Statement>>& GetStatements() const {
+    return statements_;
   }
 
  private:

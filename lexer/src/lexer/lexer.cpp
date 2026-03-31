@@ -4,7 +4,7 @@
 #include <map>
 
 Lexer::Lexer(std::string_view source)
-    : source_(source) {}
+  : source_(source) {}
 
 char Lexer::Peek() const {
   if (cursor_ >= source_.size()) {
@@ -25,17 +25,19 @@ void Lexer::SkipWhitespace() {
 }
 
 Token Lexer::ReadIdentifier() {
-  static const std::map<std::string_view, TokenType> keywords = {
-    {"var", TokenType::Var},
-    {"int", TokenType::IntType},
-    {"if", TokenType::If},
-    {"else", TokenType::Else},
-    {"print", TokenType::Print}};
-
   std::string value;
-  while (std::isalnum(Peek()) or Peek() == '_') {
+  while (std::isalnum(Peek()) || Peek() == '_') {
     value += Consume();
   }
+
+  static const std::map<std::string_view, TokenType> keywords = {
+      {"var", TokenType::Var},
+      {"int", TokenType::IntType},
+      {"if", TokenType::If},
+      {"else", TokenType::Else},
+      {"while", TokenType::While},
+      {"print", TokenType::Print}
+  };
 
   if (keywords.contains(value)) {
     return {keywords.at(value), value};
@@ -61,7 +63,7 @@ std::expected<std::vector<Token>, Error> Lexer::Tokenize() {
       break;
     }
 
-    auto c = Peek();
+    char c = Peek();
     if (std::isalpha(c)) {
       tokens.push_back(ReadIdentifier());
     } else if (std::isdigit(c)) {

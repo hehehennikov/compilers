@@ -83,27 +83,41 @@ std::expected<std::unique_ptr<Statement>, Error> Parser::ParseStatement() {
   }
   if (Match(TokenType::If)) {
     Match(TokenType::LParen);
-    auto cond = ParseExpression();
+    auto cond_res = ParseExpression();
+    if (!cond_res) return std::unexpected(cond_res.error());
     Match(TokenType::RParen);
     Match(TokenType::LBrace);
 
     std::vector<std::unique_ptr<Statement>> then_stmts;
-    while (Peek().type != TokenType::RBrace) {
-      then_stmts.push_back(std::move(*ParseStatement()));
+    while (Peek().type != TokenType::RBrace && Peek().type != TokenType::Eof) {
+      auto stmt_res = ParseStatement();
+      if (!stmt_res) return std::unexpected(stmt_res.error());
+      then_stmts.push_back(std::move(*stmt_res));
     }
-
     Match(TokenType::RBrace);
-    Match(TokenType::Else);
-    Match(TokenType::LBrace);
 
     std::vector<std::unique_ptr<Statement>> else_stmts;
-
-    while (Peek().type != TokenType::RBrace) {
-      else_stmts.push_back(std::move(*ParseStatement()));
+    if (Match(TokenType::Else)) {
+      Match(TokenType::LBrace);
+      while (Peek().type != TokenType::RBrace && Peek().type != TokenType::Eof) {
+        auto stmt_res = ParseStatement();
+        if (!stmt_res) return std::unexpected(stmt_res.error());
+        else_stmts.push_back(std::move(*stmt_res));
+      }
+      Match(TokenType::RBrace);
     }
-    Match(TokenType::RBrace);
 
-    return std::make_unique<IfStatement>(std::move(*cond), std::move(then_stmts), std::move(else_stmts));
+    return std::make_unique<IfStatement>(std::move(*cond_res), std::move(then_stmts), std::move(else_stmts));
+  }
+  if (Match(TokenType::While)) {
+    Match(TokenType::LParen);
+    auto cond = ParseExpression();
+    Match(TokenType::RParen);
+    Match(TokenType::LBrace);
+    std::vector<std::unique_ptr<Statement>> body;
+    while (Peek().type != TokenType::RBrace) body.push_back(std::move(*ParseStatement()));
+    Match(TokenType::RBrace);
+    return std::make_unique<WhileStatement>(std::move(*cond), std::move(body));
   }
 
   return std::unexpected(Error{ErrorType::ParseError, "Unknown statement"});

@@ -1,27 +1,13 @@
 #include <gtest/gtest.h>
 
-#include <lexer/lexer.hpp>
-#include <lexer/parser.hpp>
-
-template <typename T>
-using Expect = std::expected<T, Error>;
-
-Expect<void> RunCompiler(std::string_view code) {
-  return Lexer(code).Tokenize()
-      .and_then([](std::vector<Token> tokens) {
-          return Parser(std::move(tokens)).Parse();
-      })
-      .transform([](const std::unique_ptr<MainFunction>& program) {
-          program->Run();
-      });
-}
+#include <user.hpp>
 
 std::string RunAndCapture(std::string_view code) {
   std::stringstream buffer;
   std::streambuf* old = std::cout.rdbuf(buffer.rdbuf());
 
   auto result = RunCompiler(code);
-  std::cout.rdbuf(old); // возвращаем обратно
+  std::cout.rdbuf(old);
 
   return result ? buffer.str() : "ERROR";
 }
