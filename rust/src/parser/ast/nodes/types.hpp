@@ -7,10 +7,10 @@
 
 namespace parser::ast::nodes {
 
-class PrimitiveType : public TypeNode {
+class PrimitiveType : public Type {
  public:
-  PrimitiveType(const lexer::TokenType& kind, common::SourceLocation l)
-      : TypeNode(std::move(l)), kind(kind) {}
+  PrimitiveType(lexer::TokenType kind, common::SourceLocation l)
+      : Type(l), kind(kind) {}
 
  public:
   void Accept(visitor::IVisitor* v) override {
@@ -21,16 +21,16 @@ class PrimitiveType : public TypeNode {
   lexer::TokenType kind;
 };
 
-class ReferenceType : public TypeNode {
+class ReferenceType : public Type {
  public:
-  ReferenceType(bool is_mut,
-                    std::unique_ptr<Lifetime> lt,
-                    std::unique_ptr<TypeNode> base,
-                    common::SourceLocation l)
-      : TypeNode(std::move(l)),
-        is_mutable(is_mut),
-        lifetime(std::move(lt)),
-        base(std::move(base)) {}
+  ReferenceType(bool is_mutable, 
+                std::unique_ptr<Lifetime> lifetime, 
+                std::unique_ptr<Type> base,
+                common::SourceLocation l)
+      : Type(l),
+        lifetime(std::move(lifetime)),
+        base(std::move(base)),
+        is_mutable(is_mutable) {}
 
  public:
   void Accept(visitor::IVisitor* v) override {
@@ -38,24 +38,23 @@ class ReferenceType : public TypeNode {
   }
 
  public:
-  bool is_mutable;
   std::unique_ptr<Lifetime> lifetime;
-  std::unique_ptr<TypeNode> base;
+  std::unique_ptr<Type> base;
+  bool is_mutable;
 };
 
-class PointerType : public TypeNode {
+class PointerType : public Type {
  public:
   enum class Kind {
-    Raw,
+    RawConst,
+    RawMut,
     Box,
     Unique
   };
 
  public:
-  PointerType(const Kind& k,
-                  std::unique_ptr<TypeNode> base,
-                  common::SourceLocation l)
-      : TypeNode(std::move(l)), kind(k), base(std::move(base)) {}
+  PointerType(Kind kind, std::unique_ptr<Type> base, common::SourceLocation l)
+      : Type(l), kind(kind), base(std::move(base)) {}
 
  public:
   void Accept(visitor::IVisitor* v) override {
@@ -64,15 +63,17 @@ class PointerType : public TypeNode {
 
  public:
   Kind kind;
-  std::unique_ptr<TypeNode> base;
+  std::unique_ptr<Type> base;
 };
 
-class ArrayType : public TypeNode {
+class ArrayType : public Type {
  public:
-  ArrayType(std::unique_ptr<TypeNode> base,
-                std::unique_ptr<Expression> size,
-                common::SourceLocation l)
-      : TypeNode(std::move(l)), base(std::move(base)), size_expr(std::move(size)) {}
+  ArrayType(std::unique_ptr<Type> base,
+            std::unique_ptr<Expression> size_expr, 
+            common::SourceLocation l)
+      : Type(l),
+        base(std::move(base)), 
+        size_expr(std::move(size_expr)) {}
 
  public:
   void Accept(visitor::IVisitor* v) override {
@@ -80,16 +81,21 @@ class ArrayType : public TypeNode {
   }
 
  public:
-  std::unique_ptr<TypeNode> base;
+  std::unique_ptr<Type> base;
   std::unique_ptr<Expression> size_expr;
 };
 
-class GenericType : public TypeNode {
+/*
+ * ex.: Vec<i32>, Result<T, E>.
+ */
+class GenericType : public Type {
  public:
-  GenericType(std::string name,
-                  std::vector<std::unique_ptr<TypeNode>> args,
-                  common::SourceLocation l)
-      : TypeNode(std::move(l)), base_name(std::move(name)), arguments(std::move(args)) {}
+  GenericType(std::unique_ptr<Path> path, 
+              std::vector<std::unique_ptr<Type>> arguments,
+              common::SourceLocation l)
+      : Type(l),
+        path(std::move(path)), 
+        arguments(std::move(arguments)) {}
 
  public:
   void Accept(visitor::IVisitor* v) override {
@@ -97,17 +103,18 @@ class GenericType : public TypeNode {
   }
 
  public:
-  std::string base_name;
-  std::vector<std::unique_ptr<TypeNode>> arguments;
+  std::unique_ptr<Path> path;
+  std::vector<std::unique_ptr<Type>> arguments;
 };
 
-class FunctionType : public TypeNode {
+class FunctionType : public Type {
  public:
-  FunctionType(std::vector<std::unique_ptr<TypeNode>> params,
-               std::unique_ptr<TypeNode> ret, common::SourceLocation l)
-      : TypeNode(std::move(l)),
-        param_types(std::move(params)),
-        return_type(std::move(ret)) {}
+  FunctionType(std::vector<std::unique_ptr<Type>> params,
+               std::unique_ptr<Type> return_type,
+               common::SourceLocation l)
+      : Type(l),
+        params(std::move(params)), 
+        return_type(std::move(return_type)) {}
 
  public:
   void Accept(visitor::IVisitor* v) override {
@@ -115,8 +122,18 @@ class FunctionType : public TypeNode {
   }
 
  public:
-  std::vector<std::unique_ptr<TypeNode>> param_types;
-  std::unique_ptr<TypeNode> return_type;
+  std::vector<std::unique_ptr<Type>> params;
+  std::unique_ptr<Type> return_type; // may be nullptr for unit
+};
+
+class PlaceholderType : public Type {
+ public:
+  explicit PlaceholderType(common::SourceLocation l) : Type(l) {}
+
+ public:
+  void Accept(visitor::IVisitor* v) override {
+    v->Visit(this);
+  }
 };
 
 }  // namespace parser::ast::nodes

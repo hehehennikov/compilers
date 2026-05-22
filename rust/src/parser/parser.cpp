@@ -1,194 +1,214 @@
 #include "parser/parser.hpp"
+#include "parser/precedence.hpp"
+#include "common/diagnostic.hpp"
+#include "ast/nodes/all.hpp"
 
-#include <common/diagnostic.hpp>
-
-#include <parser/ast/nodes/misc.hpp>
-#include <parser/ast/nodes/expressions.hpp>
-#include <parser/ast/nodes/types.hpp>
-#include <parser/ast/nodes/pattern.hpp>
-#include <parser/ast/nodes/statements.hpp>
-#include <parser/ast/nodes/declarations.hpp>
+#include <algorithm>
 
 namespace parser {
 
 using namespace ast::nodes;
 
+bool IsAssignmentOperator(lexer::TokenType type) {
+  return type == lexer::TokenType::Equal ||
+         type == lexer::TokenType::PlusEq ||
+         type == lexer::TokenType::MinusEq ||
+         type == lexer::TokenType::StarEq ||
+         type == lexer::TokenType::SlashEq ||
+         type == lexer::TokenType::AmpersandEq ||
+         type == lexer::TokenType::PipeEq ||
+         type == lexer::TokenType::CaretEq ||
+         type == lexer::TokenType::LessLessEq ||
+         type == lexer::TokenType::GreaterGreaterEq;
+}
+
+bool IsPrefixOperator(lexer::TokenType type) {
+  return type == lexer::TokenType::Minus ||
+         type == lexer::TokenType::Exclamation ||
+         type == lexer::TokenType::Ampersand ||
+         type == lexer::TokenType::Star ||
+         type == lexer::TokenType::Tilda ||
+         type == lexer::TokenType::LogicNot;
+}
+
 Parser::Parser(lexer::Lexer& lexer) : lexer_(lexer) {
   Advance();
 }
 
-// cursor
 void Parser::Advance() {
-  prev_tok_ = cur_tok_;
-  auto res = lexer_.NextToken();
-  if (res) {
-    cur_tok_ = std::move(*res);
+  previous_token_ = std::move(current_token_);
+
+  auto result = lexer_.NextToken();
+  if (result.has_value()) {
+    current_token_ = std::move(result.value());
   } else {
-    ///TODO:
-    exit(1);
+    std::exit(1);
   }
 }
 
 bool Parser::Check(lexer::TokenType type) const {
-  return cur_tok_.type == type;
+  return current_token_.type == type;
 }
 
 bool Parser::Match(lexer::TokenType type) {
   if (Check(type)) {
     Advance();
-
     return true;
   }
+
   return false;
 }
 
 void Parser::Expect(lexer::TokenType type, std::string_view message) {
   if (Check(type)) {
     Advance();
-
     return;
   }
 
   common::DiagnosticEngine::GetInstance().Report(
-      common::DiagnosticLevel::Error, cur_tok_.loc, std::string(message));
-}
-
-Precedence Parser::GetCurrentPrecedence() {
-  auto it = Precedences.find(cur_tok_.type);
-  if (it != Precedences.end()) {
-    return it->second;
-  }
-
-  return Precedence::LOWEST;
+      common::DiagnosticLevel::Error,
+      current_token_.loc,
+      std::string(message)
+  );
 }
 
 bool Parser::IsAtEnd() const {
-  return cur_tok_.type == lexer::TokenType::Eof;
+  return current_token_.type == lexer::TokenType::Eof;
 }
 
-std::vector<std::unique_ptr<Statement>> Parser::ParseProgram() {
-  std::vector<std::unique_ptr<Statement>> program;
+std::vector<std::unique_ptr<Base>> Parser::ParseProgram() {
+  std::vector<std::unique_ptr<Base>> program;
 
   while (not IsAtEnd()) {
-    auto stmt = ParseStatement();
-    if (stmt) {
-      program.push_back(std::move(stmt));
+    auto item = ParseTopLevelItem();
+
+    if (item != nullptr) {
+      program.push_back(std::move(item));
+    } else {
+      // to prevent infinite loop on syntax errors
+      Synchronize();
     }
   }
 
   return program;
 }
 
+std::unique_ptr<Base> Parser::ParseTopLevelItem() {
+  auto attrs = ParseAttributes();
+  std::unique_ptr<Base> result = nullptr;
+
+  switch (current_token_.type) {
+    case lexer::TokenType::Module:
+      result = ParseModuleDecl();
+      break;
+    case lexer::TokenType::Import:
+      result = ParseImportDecl();
+      break;
+    case lexer::TokenType::Export:
+      result = ParseExportDecl();
+      break;
+    default:
+      result = ParseStatement();
+      break;
+  }
+
+  if (result != nullptr && not attrs.empty()) {
+    result->attrs = std::move(attrs);
+  }
+
+  return result;
+}
+
+void Parser::Synchronize() {
+  Advance();
+
+  while (not IsAtEnd()) {
+    if (previous_token_.type == lexer::TokenType::Semi) {
+      return;
+    }
+
+    switch (current_token_.type) {
+      case lexer::TokenType::Let:
+      case lexer::TokenType::Func:
+      case lexer::TokenType::Struct:
+      case lexer::TokenType::Trait:
+      case lexer::TokenType::Return:
+      case lexer::TokenType::If:
+        return;
+      default:
+        Advance();
+    }
+  }
+}
+
 std::unique_ptr<Statement> Parser::ParseStatement() {
   auto attrs = ParseAttributes();
 
-  std::unique_ptr<Statement> stmt;
-  switch (cur_tok_.type) {
+  std::unique_ptr<Statement> result = nullptr;
+
+  switch (current_token_.type) {
     case lexer::TokenType::Let:
-      stmt = ParseLet();
+      result = ParseLet();
       break;
     case lexer::TokenType::Return:
-      stmt = ParseReturn();
+      result = ParseReturn();
       break;
     case lexer::TokenType::While:
-      stmt = ParseWhile();
-      break;
-    case lexer::TokenType::Loop:
-      stmt = ParseLoop();
+      result = ParseWhile();
       break;
     case lexer::TokenType::For:
-      stmt = ParseForIn();
+      result = ParseForIn();
       break;
     case lexer::TokenType::Break:
-      stmt = ParseBreak();
+      result = ParseBreak();
       break;
     case lexer::TokenType::Continue:
-      stmt = ParseContinue();
+      result = ParseContinue();
       break;
-    case lexer::TokenType::StaticIf:
-      stmt = ParseStaticIf();
+    case lexer::TokenType::Defer:
+      result = ParseDefer();
       break;
-
+    case lexer::TokenType::Static:
+      result = ParseStaticIf();
+      break;
     case lexer::TokenType::Func:
-      stmt = ParseFuncDecl();
+      result = ParseFuncDecl();
       break;
     case lexer::TokenType::Struct:
-      stmt = ParseStructDecl();
+      result = ParseStructDecl();
       break;
     case lexer::TokenType::Enum:
-      stmt = ParseEnumDecl();
+      result = ParseEnumDecl();
       break;
     case lexer::TokenType::Trait:
-      stmt = ParseTraitDecl();
+      result = ParseTraitDecl();
       break;
     case lexer::TokenType::Impl:
-      stmt = ParseImplDecl();
+      result = ParseImplDecl();
       break;
     case lexer::TokenType::Using:
-      stmt = ParseTypeAlias();
+      result = ParseTypeAlias();
       break;
-
     default:
-      stmt = ParseAssignOrExprStmt();
+      result = ParseAssignOrExprStmt();
       break;
   }
 
-  if (stmt && !attrs.empty()) {
-    stmt->attrs = std::move(attrs);
+  if (result != nullptr && not attrs.empty()) {
+    result->attrs = std::move(attrs);
   }
 
-  return stmt;
-}
-
-std::unique_ptr<WhileStmt> Parser::ParseWhile() {
-  auto loc = cur_tok_.loc;
-  Advance(); // 'while'
-  auto cond = ParseExpression(Precedence::LOWEST);
-  auto body = ParseBlockExpr();
-  return std::make_unique<WhileStmt>(std::move(cond), std::move(body), loc);
-}
-
-std::unique_ptr<ForInStmt> Parser::ParseForIn() {
-  auto loc = cur_tok_.loc;
-  Advance(); // 'for'
-  auto pat = ParsePattern();
-  Expect(lexer::TokenType::In, "Expected 'in' after pattern");
-  auto iter = ParseExpression(Precedence::LOWEST);
-  auto body = ParseBlockExpr();
-  return std::make_unique<ForInStmt>(std::move(pat), std::move(iter), std::move(body), loc);
-}
-
-std::unique_ptr<ReturnStmt> Parser::ParseReturn() {
-  auto loc = cur_tok_.loc;
-  Advance(); // 'return'
-  std::unique_ptr<Expression> val = nullptr;
-  if (!Check(lexer::TokenType::Semi)) val = ParseExpression(Precedence::LOWEST);
-  Expect(lexer::TokenType::Semi, "Expected ';' after return");
-  return std::make_unique<ReturnStmt>(std::move(val), loc);
-}
-
-std::unique_ptr<BreakStmt> Parser::ParseBreak() {
-  auto loc = cur_tok_.loc;
-  Advance(); Expect(lexer::TokenType::Semi, "Expected ';'");
-  return std::make_unique<BreakStmt>(loc);
-}
-
-std::unique_ptr<ContinueStmt> Parser::ParseContinue() {
-  auto loc = cur_tok_.loc;
-  Advance(); Expect(lexer::TokenType::Semi, "Expected ';'");
-  return std::make_unique<ContinueStmt>(loc);
+  return result;
 }
 
 std::unique_ptr<LetStmt> Parser::ParseLet() {
-  auto loc = cur_tok_.loc;
-  Advance(); // 'let'
+  auto loc = current_token_.loc;
+  Advance(); // consume `let`
 
   bool is_mut = Match(lexer::TokenType::Mut);
-  bool is_lazy = Match(lexer::TokenType::Lazy);
-
   auto pat = ParsePattern();
 
-  std::unique_ptr<TypeNode> type = nullptr;
+  std::unique_ptr<Type> type = nullptr;
   if (Match(lexer::TokenType::Colon)) {
     type = ParseType();
   }
@@ -199,123 +219,185 @@ std::unique_ptr<LetStmt> Parser::ParseLet() {
   }
 
   Expect(lexer::TokenType::Semi, "Expected ';' after let statement");
-  return std::make_unique<LetStmt>(std::move(pat), is_mut, is_lazy, std::move(type), std::move(init), loc);
+  return std::make_unique<LetStmt>(std::move(pat), is_mut, std::move(type), std::move(init), loc);
 }
 
-std::unique_ptr<Statement> Parser::ParseAssignOrExprStmt() {
-  auto loc = cur_tok_.loc;
-  auto expr = ParseExpression(Precedence::LOWEST);
+std::unique_ptr<ReturnStmt> Parser::ParseReturn() {
+  auto location = current_token_.loc;
+  Advance(); // consume `return`
 
-  if (Match(lexer::TokenType::Equal)) {
-    auto rhs = ParseExpression(Precedence::LOWEST);
-    Expect(lexer::TokenType::Semi, "Expected ';' after assignment");
-    return std::make_unique<AssignStmt>(std::move(expr), std::move(rhs), loc);
+  std::unique_ptr<Expression> value = nullptr;
+
+  // semicolon = empty return (return unit)
+  if (not Check(lexer::TokenType::Semi)) {
+    value = ParseExpression(Precedence::LOWEST);
   }
 
-  Match(lexer::TokenType::Semi);
-  return std::make_unique<ExprStmt>(std::move(expr), loc);
+  Expect(lexer::TokenType::Semi, "Expected ';' after return statement");
+
+  return std::make_unique<ReturnStmt>(std::move(value), location);
 }
 
-// exprs
-std::unique_ptr<Expression> Parser::ParseExpression(Precedence precedence) {
-  auto left = ParsePrefix();
-  if (not left) {
+std::unique_ptr<WhileStmt> Parser::ParseWhile() {
+  auto location = current_token_.loc;
+  Advance(); // consume 'while'
+
+  auto condition = ParseExpression(Precedence::LOWEST);
+  auto body = ParseBlockExpr();
+
+  return std::make_unique<WhileStmt>(
+      std::move(condition),
+      std::move(body),
+      location
+  );
+}
+
+std::unique_ptr<ForInStmt> Parser::ParseForIn() {
+  auto location = current_token_.loc;
+  Advance(); // consume 'for'
+
+  auto pattern = ParsePattern();
+  Expect(lexer::TokenType::In, "Expected 'in' keyword in for loop");
+
+  auto iterable = ParseExpression(Precedence::LOWEST);
+  auto body = ParseBlockExpr();
+
+  return std::make_unique<ForInStmt>(
+      std::move(pattern),
+      std::move(iterable),
+      std::move(body),
+      location
+  );
+}
+
+std::unique_ptr<BreakStmt> Parser::ParseBreak() {
+  auto location = current_token_.loc;
+  Advance(); // consume 'break'
+
+  std::unique_ptr<Expression> value = nullptr;
+
+  // break can return a value from a loop block
+  if (not Check(lexer::TokenType::Semi)) {
+    value = ParseExpression(Precedence::LOWEST);
+  }
+
+  Expect(lexer::TokenType::Semi, "Expected ';' after break");
+
+  return std::make_unique<BreakStmt>(std::move(value), location);
+}
+
+std::unique_ptr<ContinueStmt> Parser::ParseContinue() {
+  auto location = current_token_.loc;
+  Advance(); // consume 'continue'
+
+  Expect(lexer::TokenType::Semi, "Expected ';' after continue");
+
+  return std::make_unique<ContinueStmt>(location);
+}
+
+std::unique_ptr<DeferStmt> Parser::ParseDefer() {
+  auto location = current_token_.loc;
+  Advance(); // consume 'defer'
+
+  auto body = ParseBlockExpr();
+
+  return std::make_unique<DeferStmt>(std::move(body), location);
+}
+
+
+std::unique_ptr<Statement> Parser::ParseAssignOrExprStmt() {
+  auto start_location = current_token_.loc;
+  auto expr = ParseExpression(Precedence::LOWEST);
+
+  if (expr == nullptr) {
     return nullptr;
   }
 
-  while (not IsAtEnd() && (int)precedence < (int)GetCurrentPrecedence()) {
+  if (IsAssignmentOperator(current_token_.type)) {
+    auto op = current_token_.type;
+    Advance();
+
+    auto rhs = ParseExpression(Precedence::LOWEST);
+    Expect(lexer::TokenType::Semi, "Expected ';' after assignment");
+
+    return std::make_unique<AssignStmt>(std::move(expr), op, std::move(rhs), start_location);
+  }
+
+  if (Match(lexer::TokenType::Semi)) {
+    return std::make_unique<ExprStmt>(std::move(expr), start_location);
+  }
+
+  return std::make_unique<ExprStmt>(std::move(expr), start_location);
+}
+
+std::unique_ptr<Expression> Parser::ParseExpression(Precedence precedence) {
+  auto left = ParsePrefix();
+  if (left == nullptr) {
+    return nullptr;
+  }
+
+  while (not IsAtEnd() && static_cast<int>(precedence) < static_cast<int>(GetCurrentPrecedence())) {
     left = ParseInfix(std::move(left));
   }
 
   return left;
 }
 
-std::unique_ptr<MatchExpr> Parser::ParseMatchExpr() {
-  auto loc = cur_tok_.loc;
-  Advance(); // 'match'
-  auto value = ParseExpression(Precedence::LOWEST);
-  Expect(lexer::TokenType::LBrace, "Expected '{' after match value");
-
-  std::vector<MatchExpr::Arm> arms;
-  while (!Check(lexer::TokenType::RBrace) && !IsAtEnd()) {
-    auto pat = ParsePattern();
-    Expect(lexer::TokenType::FatArrow, "Expected '=>' after pattern");
-    auto body = ParseExpression(Precedence::LOWEST);
-    arms.push_back({std::move(pat), std::move(body)});
-    Match(lexer::TokenType::Comma);
-  }
-  Expect(lexer::TokenType::RBrace, "Expected '}' after match arms");
-  return std::make_unique<MatchExpr>(std::move(value), std::move(arms), loc);
-}
-
-
-std::unique_ptr<NewExpr> Parser::ParseNewExpr() {
-  auto loc = cur_tok_.loc;
-  Advance(); // 'new'
-  auto type = ParseType();
-
-  std::vector<std::unique_ptr<Expression>> args;
-  if (Match(lexer::TokenType::LParen)) {
-    if (!Check(lexer::TokenType::RParen)) {
-      do { args.push_back(ParseExpression(Precedence::LOWEST)); } while (Match(lexer::TokenType::Comma));
-    }
-    Expect(lexer::TokenType::RParen, "Expected ')'");
-  }
-  return std::make_unique<NewExpr>(std::move(type), std::move(args), loc);
-}
-
 std::unique_ptr<Expression> Parser::ParsePrefix() {
-  auto loc = cur_tok_.loc;
-  auto type = cur_tok_.type;
+  auto location = current_token_.loc;
+  auto type = current_token_.type;
 
-  // literals
+  // Literals & IDs
   if (IsLiteral(type)) {
-    auto node = std::make_unique<LiteralExpr>(cur_tok_.data, loc);
+    auto node = std::make_unique<LiteralExpr>(current_token_.data, location);
     Advance();
     return node;
   }
 
-  // idents
-  if (type == lexer::TokenType::Identifier) {
-    auto name = cur_tok_.As<std::string>().value().get();
-    Advance();
-    return std::make_unique<IdentExpr>(name, loc);
+  if (Check(lexer::TokenType::Identifier)) {
+    auto path = ParsePath();
+    return std::make_unique<IdentExpr>(path->segments.back().identifier, location);
   }
 
-  // parentheses
+  // ALL Unary operators
+  if (IsPrefixOperator(type)) {
+    Advance();
+    // Use PREFIX precedence to handle things like -x.field correctly
+    auto operand = ParseExpression(Precedence::PREFIX);
+    return std::make_unique<UnaryExpr>(type, std::move(operand), location);
+  }
+
+  // Parentheses
   if (Match(lexer::TokenType::LParen)) {
     auto expr = ParseExpression(Precedence::LOWEST);
-    Expect(lexer::TokenType::RParen, "Expected ')'");
+    Expect(lexer::TokenType::RParen, "Expected ')' after grouped expression");
     return expr;
   }
 
-  // unary
-  if (type == lexer::TokenType::Minus || type == lexer::TokenType::Exclamation ||
-      type == lexer::TokenType::Ampersand || type == lexer::TokenType::Star) {
-    Advance();
-    return std::make_unique<UnaryExpr>(type, ParseExpression(Precedence::PREFIX), loc);
+  // Control Flow / Blocks
+  if (type == lexer::TokenType::LBrace) return ParseBlockExpr();
+  if (Check(lexer::TokenType::If))      return ParseIfExpr();
+  if (Check(lexer::TokenType::Match))   return ParseMatchExpr();
+  if (Check(lexer::TokenType::Loop))    return ParseLoopExpr();
+  if (Check(lexer::TokenType::New))     return ParseNewExpr();
+
+  // Systems
+  if (Match(lexer::TokenType::Sizeof)) {
+    Expect(lexer::TokenType::LParen, "Expected '('");
+    auto t = ParseType();
+    Expect(lexer::TokenType::RParen, "Expected ')'");
+    return std::make_unique<SizeofExpr>(std::move(t), location);
   }
 
-  // complex
-  if (type == lexer::TokenType::LBrace) {
-    return ParseBlockExpr();
-  }
-  if (Check(lexer::TokenType::If)) {
-    return ParseIfExpr();
-  }
-  if (Check(lexer::TokenType::Match)) {
-    return ParseMatchExpr();
-  }
-  if (Check(lexer::TokenType::New)) {
-    return ParseNewExpr();
-  }
+  common::DiagnosticEngine::GetInstance().Report(
+      common::DiagnosticLevel::Error, location, "Unexpected token at start of expression");
 
   return nullptr;
 }
 
 std::unique_ptr<Expression> Parser::ParseInfix(std::unique_ptr<Expression> left) {
-  auto loc = cur_tok_.loc;
-  auto op = cur_tok_.type;
+  auto loc = current_token_.loc;
+  auto op = current_token_.type;
   auto prec = GetCurrentPrecedence();
   Advance();
 
@@ -323,14 +405,28 @@ std::unique_ptr<Expression> Parser::ParseInfix(std::unique_ptr<Expression> left)
     case lexer::TokenType::As:
       return std::make_unique<CastExpr>(std::move(left), ParseType(), loc);
 
-    case lexer::TokenType::LParen:
-      return ParseCallArguments(std::move(left));
+    case lexer::TokenType::LParen: {
+      std::vector<std::unique_ptr<Expression>> args;
+      if (not Check(lexer::TokenType::RParen)) {
+        do { args.push_back(ParseExpression(Precedence::LOWEST)); } while (Match(lexer::TokenType::Comma));
+      }
+      Expect(lexer::TokenType::RParen, "Expected ')'");
+      return std::make_unique<CallExpr>(std::move(left), std::move(args), loc);
+    }
 
     case lexer::TokenType::Dot: {
-      auto member = cur_tok_.As<std::string>().value().get();
+      if (not Check(lexer::TokenType::Identifier) && !Check(lexer::TokenType::Move)) {
+        return nullptr;
+      }
+      std::string member = (current_token_.type == lexer::TokenType::Move) ? "move" : std::get<std::string>(current_token_.data);
       Advance();
-      if (Check(lexer::TokenType::LParen)) {
-         //TODO: MethodCallExpr
+      if (Match(lexer::TokenType::LParen)) {
+          std::vector<std::unique_ptr<Expression>> args;
+          if (not Check(lexer::TokenType::RParen)) {
+            do { args.push_back(ParseExpression(Precedence::LOWEST)); } while (Match(lexer::TokenType::Comma));
+          }
+          Expect(lexer::TokenType::RParen, "Expected ')'");
+          return std::make_unique<MethodCallExpr>(std::move(left), member, std::move(args), loc);
       }
       return std::make_unique<MemberAccessExpr>(std::move(left), member, loc);
     }
@@ -344,59 +440,108 @@ std::unique_ptr<Expression> Parser::ParseInfix(std::unique_ptr<Expression> left)
 }
 
 std::unique_ptr<BlockExpr> Parser::ParseBlockExpr() {
-  auto loc = cur_tok_.loc;
-  Expect(lexer::TokenType::LBrace, "Expected '{'");
+  auto location = current_token_.loc;
+  Expect(lexer::TokenType::LBrace, "Expected '{' to start a block");
 
-  std::vector<std::unique_ptr<Statement>> stmts;
-  std::unique_ptr<Expression> final_expr = nullptr;
+  std::vector<std::unique_ptr<Statement>> statements;
+  std::unique_ptr<Expression> final_expression = nullptr;
 
-  while (not Check(lexer::TokenType::RBrace) && !IsAtEnd()) {
-    if (Check(lexer::TokenType::Let) || Check(lexer::TokenType::Return)) {
-      stmts.push_back(ParseStatement());
+  while (!Check(lexer::TokenType::RBrace) && !IsAtEnd()) {
+    if (Check(lexer::TokenType::Let) || Check(lexer::TokenType::While) ||
+        Check(lexer::TokenType::Return) || Check(lexer::TokenType::If) ||
+        Check(lexer::TokenType::For)) {
+
+      auto stmt = ParseStatement();
+      if (stmt != nullptr) {
+        statements.push_back(std::move(stmt));
+      }
+      continue;
+        }
+
+    auto expr = ParseExpression(Precedence::LOWEST);
+    if (expr == nullptr) {
+      Advance();
+      continue;
+    }
+
+    if (Match(lexer::TokenType::Semi)) {
+      statements.push_back(std::make_unique<ExprStmt>(std::move(expr), location));
     } else {
-      auto expr = ParseExpression(Precedence::LOWEST);
-      if (Match(lexer::TokenType::Semi)) {
-        stmts.push_back(std::make_unique<ExprStmt>(std::move(expr), loc));
+      if (Check(lexer::TokenType::RBrace)) {
+        final_expression = std::move(expr);
       } else {
-        final_expr = std::move(expr);
-        break;
+        common::DiagnosticEngine::GetInstance().Report(
+            common::DiagnosticLevel::Error, current_token_.loc, "Expected ';' after expression");
+        statements.push_back(std::make_unique<ExprStmt>(std::move(expr), location));
       }
     }
   }
-  Expect(lexer::TokenType::RBrace, "Expected '}'");
-  return std::make_unique<BlockExpr>(std::move(stmts), std::move(final_expr), loc);
+
+  Expect(lexer::TokenType::RBrace, "Expected '}' after block");
+
+  return std::make_unique<BlockExpr>(
+      std::move(statements),
+      std::move(final_expression),
+      location
+  );
 }
 
 std::unique_ptr<IfExpr> Parser::ParseIfExpr() {
-  auto loc = cur_tok_.loc;
-  Advance(); // 'if'
-  auto cond = ParseExpression(Precedence::LOWEST);
-  auto then_b = ParseBlockExpr();
-  std::unique_ptr<BlockExpr> else_b = nullptr;
+  auto location = current_token_.loc;
+  Advance(); // consume 'if'
+
+  auto condition = ParseExpression(Precedence::LOWEST);
+  auto then_branch = ParseBlockExpr();
+
+  std::unique_ptr<BlockExpr> else_branch = nullptr;
+
   if (Match(lexer::TokenType::Else)) {
+    // handle 'else if' recursion
     if (Check(lexer::TokenType::If)) {
-       // logic for else if...
+      std::vector<std::unique_ptr<Statement>> nested_stmts;
+      auto nested_if = ParseIfExpr();
+      auto nested_loc = nested_if->location;
+
+      nested_stmts.push_back(std::make_unique<ExprStmt>(std::move(nested_if), nested_loc));
+
+      else_branch = std::make_unique<BlockExpr>(
+          std::move(nested_stmts),
+          nullptr,
+          nested_loc
+      );
     } else {
-      else_b = ParseBlockExpr();
+      else_branch = ParseBlockExpr();
     }
   }
-  return std::make_unique<IfExpr>(std::move(cond), std::move(then_b), std::move(else_b), loc);
+
+  return std::make_unique<IfExpr>(
+      std::move(condition),
+      std::move(then_branch),
+      std::move(else_branch),
+      location
+  );
 }
 
-// decls
+std::unique_ptr<LoopExpr> Parser::ParseLoopExpr() {
+  auto location = current_token_.loc;
+  Advance(); // consume 'loop'
+
+  auto body = ParseBlockExpr();
+
+  return std::make_unique<LoopExpr>(std::move(body), location);
+}
+
 std::unique_ptr<FuncDecl> Parser::ParseFuncDecl() {
-  auto loc = cur_tok_.loc;
+  auto loc = current_token_.loc;
   Advance(); // 'func'
-  std::string name = cur_tok_.As<std::string>().value().get();
+  std::string name = std::get<std::string>(current_token_.data);
   Advance();
 
-  // generics
-  if (Match(lexer::TokenType::Less)) { /* ParseGenericParameters() */ }
+  auto generics = ParseGenericParameters();
 
-  // parameters
   Expect(lexer::TokenType::LParen, "Expected '('");
   std::vector<Parameter> params;
-  if (not Check(lexer::TokenType::RParen)) {
+  if (!Check(lexer::TokenType::RParen)) {
     do {
       auto p_pat = ParsePattern();
       Expect(lexer::TokenType::Colon, "Expected ':'");
@@ -406,83 +551,77 @@ std::unique_ptr<FuncDecl> Parser::ParseFuncDecl() {
   }
   Expect(lexer::TokenType::RParen, "Expected ')'");
 
-  // return type
-  std::unique_ptr<TypeNode> ret = nullptr;
+  std::unique_ptr<Type> ret = nullptr;
   if (Match(lexer::TokenType::Arrow)) {
     ret = ParseType();
   }
 
-  // where clause
-  if (Check(lexer::TokenType::Where)) { /* ParseWhereClause() */ }
+  auto where_clause = ParseWhereClause();
 
-  // body
+  std::unique_ptr<RequiresClause> req = nullptr;
+  if (Match(lexer::TokenType::Requires)) {
+    req = std::make_unique<RequiresClause>(ParseExpression(Precedence::LOWEST), current_token_.loc);
+  }
+
   auto body = ParseBlockExpr();
-  return std::make_unique<FuncDecl>(name, std::move(params), std::move(ret), std::move(body), loc);
+  return std::make_unique<FuncDecl>(name, std::move(generics), std::move(params),
+                                    std::move(ret), std::move(where_clause),
+                                    std::move(req), std::move(body), true, loc);
 }
 
-std::unique_ptr<EnumDecl> Parser::ParseEnumDecl() {
-  auto loc = cur_tok_.loc;
-  Advance(); // 'enum'
-  std::string name = cur_tok_.As<std::string>().value().get();
+std::unique_ptr<StructDecl> Parser::ParseStructDecl() {
+  auto loc = current_token_.loc;
+  Advance(); // 'struct'
+  std::string name = std::get<std::string>(current_token_.data);
   Advance();
-  Expect(lexer::TokenType::LBrace, "Expected '{'");
 
-  std::vector<EnumVariant> variants;
-  while (!Check(lexer::TokenType::RBrace)) {
-    std::string v_name = cur_tok_.As<std::string>().value().get();
-    Advance();
-    std::vector<std::unique_ptr<TypeNode>> types;
-    if (Match(lexer::TokenType::LParen)) {
-      do { types.push_back(ParseType()); } while (Match(lexer::TokenType::Comma));
-      Expect(lexer::TokenType::RParen, "Expected ')'");
+  auto gens = ParseGenericParameters();
+  auto wheres = ParseWhereClause();
+
+  Expect(lexer::TokenType::LBrace, "Expected '{'");
+  std::vector<StructField> fields;
+  while (!Check(lexer::TokenType::RBrace) && !IsAtEnd()) {
+    if (Check(lexer::TokenType::Public) || Check(lexer::TokenType::Private)) {
+        Advance(); Match(lexer::TokenType::Colon);
+        continue;
     }
-    variants.push_back({v_name, std::move(types)});
+    std::string f_name = std::get<std::string>(current_token_.data);
+    Advance();
+    Expect(lexer::TokenType::Colon, "Expected ':'");
+    fields.push_back({f_name, ParseType(), true});
     Match(lexer::TokenType::Comma);
   }
   Expect(lexer::TokenType::RBrace, "Expected '}'");
-  return std::make_unique<EnumDecl>(name, std::move(variants), loc);
+
+  return std::make_unique<StructDecl>(name, std::move(gens), std::move(fields), std::move(wheres), loc);
 }
 
-std::unique_ptr<ImplDecl> Parser::ParseImplDecl() {
-  auto loc = cur_tok_.loc;
-  Advance(); // 'impl'
-  auto first_type = ParseType();
-
-  std::unique_ptr<TypeNode> trait = nullptr;
-  std::unique_ptr<TypeNode> target = nullptr;
-
-  if (Match(lexer::TokenType::For)) {
-    trait = std::move(first_type);
-    target = ParseType();
-  } else {
-    target = std::move(first_type);
-  }
-
-  Expect(lexer::TokenType::LBrace, "Expected '{'");
-  std::vector<std::unique_ptr<FuncDecl>> methods;
-  while (!Check(lexer::TokenType::RBrace)) {
-    methods.push_back(ParseFuncDecl());
-  }
-  Expect(lexer::TokenType::RBrace, "Expected '}'");
-  return std::make_unique<ImplDecl>(std::move(trait), std::move(target), std::move(methods), loc);
+std::unique_ptr<ModuleDecl> Parser::ParseModuleDecl() {
+  auto loc = current_token_.loc;
+  Advance(); // 'module'
+  auto path = ParsePath();
+  Expect(lexer::TokenType::Semi, "Expected ';' after module declaration");
+  return std::make_unique<ModuleDecl>(std::move(path), loc);
 }
 
-std::unique_ptr<TypeAliasDecl> Parser::ParseTypeAlias() {
-  auto loc = cur_tok_.loc;
-  Advance(); // 'using'
-  std::string name = cur_tok_.As<std::string>().value().get();
-  Advance();
-  Expect(lexer::TokenType::Equal, "Expected '='");
-  auto target = ParseType();
-  Expect(lexer::TokenType::Semi, "Expected ';'");
-  return std::make_unique<TypeAliasDecl>(name, std::move(target), loc);
+std::unique_ptr<ImportDecl> Parser::ParseImportDecl() {
+  auto loc = current_token_.loc;
+  Advance(); // 'import'
+  auto path = ParsePath();
+  Expect(lexer::TokenType::Semi, "Expected ';' after import");
+  return std::make_unique<ImportDecl>(std::move(path), loc);
 }
 
-// types & patterns
-std::unique_ptr<TypeNode> Parser::ParseType() {
-  auto loc = cur_tok_.loc;
-  if (IsPrimitiveType(cur_tok_.type)) {
-    auto t = std::make_unique<PrimitiveType>(cur_tok_.type, loc);
+std::unique_ptr<ExportDecl> Parser::ParseExportDecl() {
+  auto loc = current_token_.loc;
+  Advance(); // 'export'
+  return std::make_unique<ExportDecl>(ParseStatement(), loc);
+}
+
+std::unique_ptr<Type> Parser::ParseType() {
+  auto loc = current_token_.loc;
+  if (IsPrimitiveType(current_token_.type)) {
+    auto t = std::make_unique<PrimitiveType>(current_token_.type, loc);
     Advance();
     return t;
   }
@@ -490,110 +629,380 @@ std::unique_ptr<TypeNode> Parser::ParseType() {
     bool is_mut = Match(lexer::TokenType::Mut);
     return std::make_unique<ReferenceType>(is_mut, nullptr, ParseType(), loc);
   }
-  if (Match(lexer::TokenType::Identifier)) {
-    std::string name = prev_tok_.As<std::string>().value().get();
-    if (Match(lexer::TokenType::Less)) { // GenericType<T>
-       std::vector<std::unique_ptr<TypeNode>> args;
-       do { args.push_back(ParseType()); } while (Match(lexer::TokenType::Comma));
-       Expect(lexer::TokenType::Greater, "Expected '>'");
-       return std::make_unique<GenericType>(name, std::move(args), loc);
-    }
-    return std::make_unique<PrimitiveType>(lexer::TokenType::Identifier, loc); // fallback to user type
+
+  auto path = ParsePath();
+  if (Match(lexer::TokenType::Less)) {
+    std::vector<std::unique_ptr<Type>> args;
+    do { args.push_back(ParseType()); } while (Match(lexer::TokenType::Comma));
+    Expect(lexer::TokenType::Greater, "Expected '>'");
+    return std::make_unique<GenericType>(std::move(path), std::move(args), loc);
   }
-  return nullptr;
+  return std::make_unique<GenericType>(std::move(path), std::vector<std::unique_ptr<Type>>{}, loc);
 }
 
-std::unique_ptr<FunctionType> Parser::ParseFunctionType() {
-  auto loc = cur_tok_.loc;
-  Advance(); // 'func'
-  Expect(lexer::TokenType::LParen, "Expected '('");
-  std::vector<std::unique_ptr<TypeNode>> params;
-  if (!Check(lexer::TokenType::RParen)) {
-    do { params.push_back(ParseType()); } while (Match(lexer::TokenType::Comma));
-  }
-  Expect(lexer::TokenType::RParen, "Expected ')'");
-  Expect(lexer::TokenType::Arrow, "Expected '->'");
-  return std::make_unique<FunctionType>(std::move(params), ParseType(), loc);
-}
+std::unique_ptr<Path> Parser::ParsePath() {
+  auto loc = current_token_.loc;
+  bool is_abs = Match(lexer::TokenType::DoubleColon);
+  std::vector<PathSegment> segments;
 
-std::unique_ptr<PatternNode> Parser::ParsePattern() {
-  auto loc = cur_tok_.loc;
-  if (Match(lexer::TokenType::Underscore)) return std::make_unique<WildcardPattern>(loc);
-  if (Check(lexer::TokenType::Identifier)) {
-    auto name = cur_tok_.As<std::string>().value().get();
+  do {
+    std::string id = std::get<std::string>(current_token_.data);
     Advance();
-    return std::make_unique<BindingPattern>(name, loc);
+    std::vector<std::unique_ptr<Type>> generics;
+    if (Match(lexer::TokenType::Less)) {
+      do { generics.push_back(ParseType()); } while (Match(lexer::TokenType::Comma));
+      Expect(lexer::TokenType::Greater, "Expected '>'");
+    }
+    segments.push_back({id, std::move(generics)});
+  } while (Match(lexer::TokenType::DoubleColon));
+
+  return std::make_unique<Path>(std::move(segments), is_abs, loc);
+}
+
+std::unique_ptr<Pattern> Parser::ParsePattern() {
+  auto loc = current_token_.loc;
+  if (Match(lexer::TokenType::Underscore)) {
+    return std::make_unique<WildcardPattern>(loc);
+  }
+  if (Check(lexer::TokenType::Identifier)) {
+    std::string name = std::get<std::string>(current_token_.data);
+    Advance();
+    return std::make_unique<BindingPattern>(name, false, loc);
   }
   return nullptr;
 }
 
-// helpers
+std::vector<std::unique_ptr<Attribute>> Parser::ParseAttributes() {
+  std::vector<std::unique_ptr<Attribute>> attrs;
+  while (Check(lexer::TokenType::Hash)) {
+    Advance(); // '#'
+    Expect(lexer::TokenType::LBracket, "Expected '['");
+    std::string name = std::get<std::string>(current_token_.data);
+    Advance();
+    Expect(lexer::TokenType::RBracket, "Expected ']'");
+    attrs.push_back(std::make_unique<Attribute>(name, std::vector<std::unique_ptr<Expression>>{}, current_token_.loc));
+  }
+  return attrs;
+}
+
+std::vector<std::unique_ptr<GenericParameter>> Parser::ParseGenericParameters() {
+  std::vector<std::unique_ptr<GenericParameter>> params;
+
+  if (Match(lexer::TokenType::Less)) {
+    do {
+      auto loc = current_token_.loc;
+
+      if (not Check(lexer::TokenType::Identifier)) {
+        break;
+      }
+
+      std::string name = std::get<std::string>(current_token_.data);
+      Advance();
+
+      std::vector<std::unique_ptr<Type>> bounds;
+      if (Match(lexer::TokenType::Colon)) {
+        do {
+          bounds.push_back(ParseType());
+        } while (Match(lexer::TokenType::Plus));
+      }
+
+      params.push_back(std::make_unique<GenericParameter>(
+          std::move(name),
+          std::move(bounds),
+          loc
+      ));
+
+    } while (Match(lexer::TokenType::Comma));
+
+    Expect(lexer::TokenType::Greater, "Expected '>' after generic parameters");
+  }
+
+  return params;
+}
+
+std::vector<std::unique_ptr<WherePredicate>> Parser::ParseWhereClause() {
+  std::vector<std::unique_ptr<WherePredicate>> predicates;
+
+  if (Match(lexer::TokenType::Where)) {
+    do {
+      auto loc = current_token_.loc;
+      auto target_type = ParseType();
+
+      Expect(lexer::TokenType::Colon, "Expected ':' after type in where clause");
+
+      std::vector<std::unique_ptr<Type>> bounds;
+      do {
+        bounds.push_back(ParseType());
+      } while (Match(lexer::TokenType::Plus));
+
+      predicates.push_back(std::make_unique<WherePredicate>(
+          std::move(target_type),
+          std::move(bounds),
+          loc
+      ));
+
+    } while (Match(lexer::TokenType::Comma));
+  }
+
+  return predicates;
+}
+
+Precedence Parser::GetCurrentPrecedence() const {
+  if (auto it = Precedences.find(current_token_.type); it != Precedences.end()) {
+    return it->second;
+  }
+  return Precedence::LOWEST;
+}
+
 bool Parser::IsLiteral(lexer::TokenType type) const {
   return type == lexer::TokenType::LiteralInt || type == lexer::TokenType::LiteralFloat ||
          type == lexer::TokenType::LiteralBool || type == lexer::TokenType::LiteralString;
 }
 
 bool Parser::IsPrimitiveType(lexer::TokenType type) const {
-  return (int)type >= (int)lexer::TokenType::Int8 && (int)type <= (int)lexer::TokenType::USize;
+  return static_cast<int>(type) >= static_cast<int>(lexer::TokenType::Int8) &&
+         static_cast<int>(type) <= static_cast<int>(lexer::TokenType::USize);
 }
 
-std::vector<std::unique_ptr<Attribute>> Parser::ParseAttributes() {
-  std::vector<std::unique_ptr<Attribute>> attrs;
-  while (Check(lexer::TokenType::Hash)) {
-    attrs.push_back(ParseSingleAttribute());
+std::unique_ptr<EnumDecl> Parser::ParseEnumDecl() {
+  auto location = current_token_.loc;
+  Advance(); // consume 'enum'
+
+  if (!Check(lexer::TokenType::Identifier)) {
+    return nullptr;
   }
-  return attrs;
-}
-
-std::unique_ptr<Attribute> Parser::ParseSingleAttribute() {
-  auto loc = cur_tok_.loc;
-  Advance(); // '#'
-  Expect(lexer::TokenType::LBracket, "Expected '[' after '#'");
-  std::string name = cur_tok_.As<std::string>().value().get();
+  std::string name = std::get<std::string>(current_token_.data);
   Advance();
-  ///TODO: attr args
-  Expect(lexer::TokenType::RBracket, "Expected ']'");
-  return std::make_unique<Attribute>(name, std::vector<std::unique_ptr<Expression>>{}, loc);
-}
 
-std::vector<std::unique_ptr<GenericParameter>> Parser::ParseGenericParameters() {
-  std::vector<std::unique_ptr<GenericParameter>> params;
-  if (Match(lexer::TokenType::Less)) {
-    do {
-      auto loc = cur_tok_.loc;
-      std::string name = cur_tok_.As<std::string>().value().get();
-      Advance();
-      std::vector<std::unique_ptr<TypeNode>> bounds;
-      if (Match(lexer::TokenType::Colon)) {
-        do { bounds.push_back(ParseType()); } while (Match(lexer::TokenType::Plus));
+  auto generics = ParseGenericParameters();
+  auto where_clause = ParseWhereClause();
+
+  Expect(lexer::TokenType::LBrace, "Expected '{' for enum body");
+
+  std::vector<EnumVariant> variants;
+  while (not Check(lexer::TokenType::RBrace) && !IsAtEnd()) {
+    if (not Check(lexer::TokenType::Identifier)) {
+      break;
+    }
+
+    std::string v_name = std::get<std::string>(current_token_.data);
+    Advance();
+
+    std::vector<std::unique_ptr<Type>> types;
+    if (Match(lexer::TokenType::LParen)) {
+      if (not Check(lexer::TokenType::RParen)) {
+        do {
+          types.push_back(ParseType());
+        } while (Match(lexer::TokenType::Comma));
       }
-      params.push_back(std::make_unique<GenericParameter>(name, std::move(bounds), loc));
-    } while (Match(lexer::TokenType::Comma));
-    Expect(lexer::TokenType::Greater, "Expected '>'");
+      Expect(lexer::TokenType::RParen, "Expected ')' after variant data");
+    }
+
+    variants.push_back({std::move(v_name), std::move(types)});
+    Match(lexer::TokenType::Comma);
   }
-  return params;
+
+  Expect(lexer::TokenType::RBrace, "Expected '}' after enum variants");
+  return std::make_unique<EnumDecl>(
+      std::move(name),
+      std::move(generics),
+      std::move(variants),
+      std::move(where_clause),
+      location
+  );
 }
 
-std::vector<std::unique_ptr<WherePredicate>> Parser::ParseWhereClause() {
-  std::vector<std::unique_ptr<WherePredicate>> predicates;
-  if (Match(lexer::TokenType::Where)) {
-    do {
-      auto loc = cur_tok_.loc;
-      auto target = ParseType();
-      Expect(lexer::TokenType::Colon, "Expected ':'");
-      std::vector<std::unique_ptr<TypeNode>> bounds;
-      do { bounds.push_back(ParseType()); } while (Match(lexer::TokenType::Plus));
-      predicates.push_back(std::make_unique<WherePredicate>(std::move(target), std::move(bounds), loc));
-    } while (Match(lexer::TokenType::Comma));
-  }
-  return predicates;
-}
+std::unique_ptr<TraitDecl> Parser::ParseTraitDecl() {
+  auto location = current_token_.loc;
+  Advance(); // consume 'trait'
 
-std::unique_ptr<Lifetime> Parser::ParseLifetime() {
-  auto loc = cur_tok_.loc;
-  std::string name = cur_tok_.As<std::string>().value().get();
+  std::string name = std::get<std::string>(current_token_.data);
   Advance();
-  return std::make_unique<Lifetime>(name, loc);
+
+  auto generics = ParseGenericParameters();
+  auto where_clause = ParseWhereClause();
+
+  Expect(lexer::TokenType::LBrace, "Expected '{' for trait body");
+
+  std::vector<std::unique_ptr<FuncDecl>> methods;
+  while (not Check(lexer::TokenType::RBrace) && !IsAtEnd()) {
+    methods.push_back(ParseFuncDecl());
+  }
+
+  Expect(lexer::TokenType::RBrace, "Expected '}' after trait");
+  return std::make_unique<TraitDecl>(
+      std::move(name),
+      std::move(generics),
+      std::move(methods),
+      std::move(where_clause),
+      location
+  );
+}
+
+std::unique_ptr<ImplDecl> Parser::ParseImplDecl() {
+  auto location = current_token_.loc;
+  Advance(); // consume 'impl'
+
+  auto generics = ParseGenericParameters();
+
+  // could be 'impl Trait for Type' or just 'impl Type'
+  auto first_path = ParsePath();
+  std::unique_ptr<Path> trait_path = nullptr;
+  std::unique_ptr<Type> target_type = nullptr;
+
+  if (Match(lexer::TokenType::For)) {
+    trait_path = std::move(first_path);
+    target_type = ParseType();
+  } else {
+    target_type = std::make_unique<GenericType>(
+        std::move(first_path),
+        std::vector<std::unique_ptr<Type>>{},
+        location
+    );
+  }
+
+  auto where_clause = ParseWhereClause();
+
+  Expect(lexer::TokenType::LBrace, "Expected '{' for impl body");
+
+  std::vector<std::unique_ptr<FuncDecl>> methods;
+  while (not Check(lexer::TokenType::RBrace) && not IsAtEnd()) {
+    methods.push_back(ParseFuncDecl());
+  }
+
+  Expect(lexer::TokenType::RBrace, "Expected '}'");
+  return std::make_unique<ImplDecl>(
+      std::move(trait_path),
+      std::move(target_type),
+      std::move(generics),
+      std::move(methods),
+      std::move(where_clause),
+      location
+  );
+}
+
+std::unique_ptr<MatchExpr> Parser::ParseMatchExpr() {
+  auto location = current_token_.loc;
+  Advance(); // consume 'match'
+
+  auto value = ParseExpression(Precedence::LOWEST);
+  Expect(lexer::TokenType::LBrace, "Expected '{' after match value");
+
+  std::vector<MatchArm> arms;
+  while (not Check(lexer::TokenType::RBrace) && not IsAtEnd()) {
+    auto pattern = ParsePattern();
+
+    std::unique_ptr<Expression> guard = nullptr;
+    if (Match(lexer::TokenType::If)) {
+      guard = ParseExpression(Precedence::LOWEST);
+    }
+
+    Expect(lexer::TokenType::FatArrow, "Expected '=>' after pattern");
+    auto body = ParseExpression(Precedence::LOWEST);
+
+    arms.push_back({std::move(pattern), std::move(body), std::move(guard)});
+    Match(lexer::TokenType::Comma); // optional comma
+  }
+
+  Expect(lexer::TokenType::RBrace, "Expected '}' after match arms");
+  return std::make_unique<MatchExpr>(std::move(value), std::move(arms), location);
+}
+
+std::unique_ptr<LambdaExpr> Parser::ParseLambdaExpr() {
+  auto location = current_token_.loc;
+
+  // syntax: [move] |param: type| -> ret { body }
+  bool is_move = Match(lexer::TokenType::Move);
+
+  Expect(lexer::TokenType::Pipe, "Expected '|' for lambda parameters");
+
+  std::vector<GenericParameter> params;
+  if (not Check(lexer::TokenType::Pipe)) {
+    do {
+      std::string p_name = std::get<std::string>(current_token_.data);
+      Advance();
+
+      std::vector<std::unique_ptr<Type>> bounds;
+      if (Match(lexer::TokenType::Colon)) {
+        bounds.push_back(ParseType());
+      }
+      params.emplace_back(std::move(p_name), std::move(bounds), current_token_.loc);
+    } while (Match(lexer::TokenType::Comma));
+  }
+
+  Expect(lexer::TokenType::Pipe, "Expected closing '|'");
+
+  // optional return type
+  if (Match(lexer::TokenType::Arrow)) {
+    ParseType();
+  }
+
+  auto body = ParseBlockExpr();
+  return std::make_unique<LambdaExpr>(is_move, std::move(params), std::move(body), location);
+}
+
+std::unique_ptr<NewExpr> Parser::ParseNewExpr() {
+  auto location = current_token_.loc;
+  Advance(); // consume 'new'
+
+  auto type = ParseType();
+  std::vector<std::unique_ptr<Expression>> args;
+
+  if (Match(lexer::TokenType::LParen)) {
+    if (not Check(lexer::TokenType::RParen)) {
+      do {
+        args.push_back(ParseExpression(Precedence::LOWEST));
+      } while (Match(lexer::TokenType::Comma));
+    }
+    Expect(lexer::TokenType::RParen, "Expected ')'");
+  }
+
+  return std::make_unique<NewExpr>(std::move(type), std::move(args), location);
+}
+
+std::unique_ptr<StaticIfStmt> Parser::ParseStaticIf() {
+  auto location = current_token_.loc;
+  Advance(); // consume 'static'
+
+  if (!Match(lexer::TokenType::If)) {
+    return nullptr;
+  }
+
+  auto condition = ParseExpression(Precedence::LOWEST);
+  auto then_branch = ParseBlockExpr();
+
+  std::unique_ptr<BlockExpr> else_branch = nullptr;
+  if (Match(lexer::TokenType::Else)) {
+    else_branch = ParseBlockExpr();
+  }
+
+  return std::make_unique<StaticIfStmt>(
+      std::move(condition),
+      std::move(then_branch),
+      std::move(else_branch),
+      location
+  );
+}
+
+std::unique_ptr<TypeAliasDecl> Parser::ParseTypeAlias() {
+  auto location = current_token_.loc;
+  Advance(); // consume 'using'
+
+  std::string name = std::get<std::string>(current_token_.data);
+  Advance();
+
+  auto generics = ParseGenericParameters();
+  Expect(lexer::TokenType::Equal, "Expected '=' in type alias");
+
+  auto target = ParseType();
+  Expect(lexer::TokenType::Semi, "Expected ';' after alias");
+
+  return std::make_unique<TypeAliasDecl>(
+      std::move(name),
+      std::move(generics),
+      std::move(target),
+      location
+  );
 }
 
 } // namespace parser

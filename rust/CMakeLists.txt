@@ -4,4 +4,4 @@ project(compilers)
 include(cmake/FetchContent.cmake)
 include(cmake/Compiler.cmake)
 include(cmake/Sources.cmake)
-###TODO: tests
+include(cmake/Tests.cmake)

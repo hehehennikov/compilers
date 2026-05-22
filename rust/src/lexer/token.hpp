@@ -4,6 +4,7 @@
 #include <string>
 
 #include <cstdint>
+#include <typeinfo>
 
 #include <common/source_location.hpp>
 #include <common/internal_error.hpp>
@@ -12,9 +13,9 @@ namespace lexer {
 
 enum class TokenType {
   // keywords
-  Let, Mut, Const, Volatile, Static, As, Func, Inline, Lazy, Return,
+  Let, Mut, Const, Volatile, Static, As, Func, Inline, Return,
   Trait, Impl, Where, Requires, // for traits
-  If, Else, While, Loop, For, In, Break, Continue, StaticIf,
+  If, Else, While, Loop, For, In, Break, Continue, Defer, StaticIf,
   Module, Export, Import, Extern,
   Using,
   Self,
@@ -24,16 +25,14 @@ enum class TokenType {
   // visibility
   Public, Private, Protected,
   Safe, Unsafe,
-  // concurrency
-  Async, Await,
   // heap
   Dyn, New, Box,
   // for lambdas
   Move,
 
   // primitive types
-  Int8, Int16, Int32, Int64, Int128,
-  UInt8, UInt16, UInt32, UInt64, UInt128,
+  Int8, Int16, Int32, Int64,
+  UInt8, UInt16, UInt32, UInt64,
   Float32, Float64, Bool, String, Unit,
   ISize, USize,
 
@@ -98,8 +97,6 @@ using TokenData = std::variant<
     std::uint32_t,  // uint32
     std::int64_t,   // int64
     std::uint64_t,  // uint64
-    __int128_t,     // int128
-    __uint128_t,    // uint128
     float,          // float32
     double,         // float64
     std::string,    // identifiers, string literals

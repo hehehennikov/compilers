@@ -42,10 +42,10 @@ class Lexer {
 
   common::Tryable<Token> ReadString();
 
-  common::Tryable<Token> ReadTickOrChar();
+  common::Tryable<Token> ReadTickOrChar(common::SourceLocation loc);
 
  private:
-  std::string_view source_;
+  std::string source_;
   common::SourceLocation location_;
   std::size_t pos_ = 0;
 };

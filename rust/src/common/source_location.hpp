@@ -7,8 +7,8 @@ namespace common {
 struct SourceLocation {
   SourceLocation() = default;
 
-  explicit SourceLocation(std::string file_name)
-      : file_name(std::move(file_name)) {}
+  explicit SourceLocation(std::string_view file_name)
+      : file_name(file_name) {}
 
   void Advance(char c) {
     if (c == '\n') {

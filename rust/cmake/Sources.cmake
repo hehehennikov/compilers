@@ -4,6 +4,7 @@ add_library(compiler)
 
 file(GLOB_RECURSE LEXER_HEADERS ${SRC_DIR}/**.hpp)
 file(GLOB_RECURSE LEXER_SOURCES ${SRC_DIR}/**.cpp)
+list(REMOVE_ITEM LEXER_SOURCES ${SRC_DIR}/main.cpp)
 target_sources(compiler PRIVATE
         ${LEXER_SOURCES}
         ${LEXER_HEADERS}
@@ -17,6 +18,9 @@ target_include_directories(compiler PUBLIC
 target_compile_definitions(compiler PUBLIC
         PROJECT_ROOT_LEN=${SOURCE_PATH_SIZE}
 )
+
+target_link_libraries(compiler PUBLIC magic_enum::magic_enum)
+target_link_libraries(compiler PUBLIC LLVM)
 
 add_executable(main src/main.cpp)
 

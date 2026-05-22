@@ -35,6 +35,6 @@ template <typename T>
 using Tryable = std::expected<T, InternalError>;
 
 #define MAKE_INTERNAL_ERROR(kind, msg) \
-  std::unexpected(InternalError{kind, msg, __FILE__, __LINE__})
+  std::unexpected(::common::InternalError{kind, msg, __FILE__, __LINE__})
 
-}  // namespace compiler::common
+}  // namespace common
